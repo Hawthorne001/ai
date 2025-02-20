@@ -81,7 +81,7 @@ DeepSeek language models can be used in the `streamText` and `streamUI` function
 
 ### Cache Token Usage
 
-DeepSeek provides context caching on disk technology that can significantly reduce token costs for repeated content. You can access the cache hit/miss metrics through the `experimental_providerMetadata` property in the response:
+DeepSeek provides context caching on disk technology that can significantly reduce token costs for repeated content. You can access the cache hit/miss metrics through the `providerMetadata` property in the response:
 
 ```ts
 import { deepseek } from '@ai-sdk/deepseek';
@@ -92,7 +92,7 @@ const result = await generateText({
   prompt: 'Your prompt here',
 });
 
-console.log(result.experimental_providerMetadata);
+console.log(result.providerMetadata);
 // Example output: { deepseek: { promptCacheHitTokens: 1856, promptCacheMissTokens: 5 } }
 ```
 
@@ -108,10 +108,10 @@ The metrics include:
 
 ## Model Capabilities
 
-| Model               | Image Input         | Object Generation   | Tool Usage          | Tool Streaming      |
-| ------------------- | ------------------- | ------------------- | ------------------- | ------------------- |
-| `deepseek-chat`     | <Cross size={18} /> | <Check size={18} /> | <Check size={18} /> | <Check size={18} /> |
-| `deepseek-reasoner` | <Cross size={18} /> | <Cross size={18} /> | <Cross size={18} /> | <Cross size={18} /> |
+| Model               | Text Generation     | Object Generation   | Image Input         | Tool Usage          | Tool Streaming      |
+| ------------------- | ------------------- | ------------------- | ------------------- | ------------------- | ------------------- |
+| `deepseek-chat`     | <Check size={18} /> | <Check size={18} /> | <Cross size={18} /> | <Check size={18} /> | <Check size={18} /> |
+| `deepseek-reasoner` | <Check size={18} /> | <Cross size={18} /> | <Cross size={18} /> | <Cross size={18} /> | <Cross size={18} /> |
 
 <Note>
   Please see the [DeepSeek docs](https://api-docs.deepseek.com) for a full list

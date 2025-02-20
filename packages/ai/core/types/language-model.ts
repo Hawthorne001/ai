@@ -3,6 +3,7 @@ import {
   LanguageModelV1CallWarning,
   LanguageModelV1FinishReason,
   LanguageModelV1LogProbs,
+  LanguageModelV1Source,
 } from '@ai-sdk/provider';
 
 // Re-export LanguageModelV1 types for the middleware:
@@ -58,6 +59,11 @@ some settings might not be supported, which can lead to suboptimal results.
 export type CallWarning = LanguageModelV1CallWarning;
 
 /**
+A source that has been used as input to generate the response.
+*/
+export type Source = LanguageModelV1Source;
+
+/**
 Tool choice for the generation. It supports the following settings:
 
 - `auto` (default): the model can choose whether and which tools to call.
@@ -65,9 +71,15 @@ Tool choice for the generation. It supports the following settings:
 - `none`: the model must not call tools
 - `{ type: 'tool', toolName: string (typed) }`: the model must call the specified tool
  */
-// TODO 4.1 rename to ToolChoice
-export type CoreToolChoice<TOOLS extends Record<string, unknown>> =
+export type ToolChoice<TOOLS extends Record<string, unknown>> =
   | 'auto'
   | 'none'
   | 'required'
   | { type: 'tool'; toolName: keyof TOOLS };
+
+/**
+ * @deprecated Use `ToolChoice` instead.
+ */
+// TODO remove in v5
+export type CoreToolChoice<TOOLS extends Record<string, unknown>> =
+  ToolChoice<TOOLS>;
