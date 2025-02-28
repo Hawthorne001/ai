@@ -7,22 +7,21 @@ import { assembleOperationName } from '../telemetry/assemble-operation-name';
 import { recordSpan } from '../telemetry/record-span';
 import { selectTelemetryAttributes } from '../telemetry/select-telemetry-attributes';
 import { TelemetrySettings } from '../telemetry/telemetry-settings';
-import { CoreTool } from '../tool';
 import {
   FinishReason,
   LanguageModelUsage,
   LogProbs,
   ProviderMetadata,
 } from '../types';
+import { Source } from '../types/language-model';
 import { calculateLanguageModelUsage } from '../types/usage';
 import { parseToolCall } from './parse-tool-call';
 import { ToolCallUnion } from './tool-call';
 import { ToolCallRepairFunction } from './tool-call-repair';
 import { ToolResultUnion } from './tool-result';
+import { ToolSet } from './tool-set';
 
-export type SingleRequestTextStreamPart<
-  TOOLS extends Record<string, CoreTool>,
-> =
+export type SingleRequestTextStreamPart<TOOLS extends ToolSet> =
   | {
       type: 'text-delta';
       textDelta: string;
@@ -30,6 +29,18 @@ export type SingleRequestTextStreamPart<
   | {
       type: 'reasoning';
       textDelta: string;
+    }
+  | {
+      type: 'reasoning-signature';
+      signature: string;
+    }
+  | {
+      type: 'redacted-reasoning';
+      data: string;
+    }
+  | {
+      type: 'source';
+      source: Source;
     }
   | ({
       type: 'tool-call';
@@ -66,7 +77,7 @@ export type SingleRequestTextStreamPart<
       error: unknown;
     };
 
-export function runToolsTransformation<TOOLS extends Record<string, CoreTool>>({
+export function runToolsTransformation<TOOLS extends ToolSet>({
   tools,
   generatorStream,
   toolCallStreaming,
@@ -141,6 +152,9 @@ export function runToolsTransformation<TOOLS extends Record<string, CoreTool>>({
         // forward:
         case 'text-delta':
         case 'reasoning':
+        case 'reasoning-signature':
+        case 'redacted-reasoning':
+        case 'source':
         case 'response-metadata':
         case 'error': {
           controller.enqueue(chunk);

@@ -1,7 +1,4 @@
-import {
-  ToolCall as CoreToolCall,
-  ToolResult as CoreToolResult,
-} from '@ai-sdk/provider-utils';
+import { ToolCall, ToolResult } from '@ai-sdk/provider-utils';
 import { formatDataStreamPart, parseDataStreamPart } from './data-stream-parts';
 
 describe('data-stream-parts', () => {
@@ -63,7 +60,7 @@ describe('data-stream-parts', () => {
 
 describe('tool_call stream part', () => {
   it('should format a tool_call stream part', () => {
-    const toolCall: CoreToolCall<string, any> = {
+    const toolCall: ToolCall<string, any> = {
       toolCallId: 'tc_0',
       toolName: 'example_tool',
       args: { test: 'value' },
@@ -75,7 +72,7 @@ describe('tool_call stream part', () => {
   });
 
   it('should parse a tool_call stream part', () => {
-    const toolCall: CoreToolCall<string, any> = {
+    const toolCall: ToolCall<string, any> = {
       toolCallId: 'tc_0',
       toolName: 'example_tool',
       args: { test: 'value' },
@@ -93,7 +90,7 @@ describe('tool_call stream part', () => {
 describe('tool_result stream part', () => {
   it('should format a tool_result stream part', () => {
     const toolResult: Omit<
-      CoreToolResult<string, any, any>,
+      ToolResult<string, any, any>,
       'args' | 'toolName'
     > = {
       toolCallId: 'tc_0',
@@ -315,6 +312,97 @@ describe('reasoning stream part', () => {
     const input = 'g:{"invalid": "object"}';
     expect(() => parseDataStreamPart(input)).toThrow(
       '"reasoning" parts expect a string value.',
+    );
+  });
+});
+
+describe('source stream part', () => {
+  it('should format a source stream part', () => {
+    const source = {
+      sourceType: 'url',
+      id: 'source_1',
+      url: 'https://example.com',
+      title: 'Example Source',
+    } as const;
+
+    expect(formatDataStreamPart('source', source)).toEqual(
+      `h:${JSON.stringify(source)}\n`,
+    );
+  });
+
+  it('should parse a source stream part', () => {
+    const source = {
+      sourceType: 'url',
+      id: 'source_1',
+      url: 'https://example.com',
+      title: 'Example Source',
+    };
+
+    expect(parseDataStreamPart(`h:${JSON.stringify(source)}`)).toEqual({
+      type: 'source',
+      value: source,
+    });
+  });
+
+  it('should throw an error if the source value is not an object (e.g., a string)', () => {
+    expect(() => parseDataStreamPart(`h:"not an object"`)).toThrow(
+      '"source" parts expect a Source object.',
+    );
+  });
+
+  it('should throw an error if the source value is null', () => {
+    expect(() => parseDataStreamPart(`h:null`)).toThrow(
+      '"source" parts expect a Source object.',
+    );
+  });
+});
+
+describe('redacted_reasoning stream part', () => {
+  it('should format a redacted_reasoning stream part', () => {
+    expect(
+      formatDataStreamPart('redacted_reasoning', {
+        data: 'test redacted reasoning',
+      }),
+    ).toEqual('i:{"data":"test redacted reasoning"}\n');
+  });
+
+  it('should parse a redacted_reasoning stream part', () => {
+    const input = 'i:{"data":"test redacted reasoning"}';
+    expect(parseDataStreamPart(input)).toEqual({
+      type: 'redacted_reasoning',
+      value: { data: 'test redacted reasoning' },
+    });
+  });
+
+  it('should throw an error if the value is not an object with a data property', () => {
+    const input = 'i:"invalid string"';
+    expect(() => parseDataStreamPart(input)).toThrow(
+      '"redacted_reasoning" parts expect an object with a "data" property.',
+    );
+  });
+});
+
+describe('reasoning_signature stream part', () => {
+  it('should format a reasoning_signature stream part', () => {
+    expect(
+      formatDataStreamPart('reasoning_signature', {
+        signature: 'test signature',
+      }),
+    ).toEqual('j:{"signature":"test signature"}\n');
+  });
+
+  it('should parse a reasoning_signature stream part', () => {
+    const input = 'j:{"signature":"test signature"}';
+    expect(parseDataStreamPart(input)).toEqual({
+      type: 'reasoning_signature',
+      value: { signature: 'test signature' },
+    });
+  });
+
+  it('should throw an error if the value is not an object with a signature property', () => {
+    const input = 'j:"invalid string"';
+    expect(() => parseDataStreamPart(input)).toThrow(
+      '"reasoning_signature" parts expect an object with a "signature" property.',
     );
   });
 });

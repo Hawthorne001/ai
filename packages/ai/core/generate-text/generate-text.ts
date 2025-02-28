@@ -17,8 +17,8 @@ import { getTracer } from '../telemetry/get-tracer';
 import { recordSpan } from '../telemetry/record-span';
 import { selectTelemetryAttributes } from '../telemetry/select-telemetry-attributes';
 import { TelemetrySettings } from '../telemetry/telemetry-settings';
-import { CoreTool } from '../tool/tool';
-import { CoreToolChoice, LanguageModel, ProviderMetadata } from '../types';
+import { LanguageModel, ToolChoice } from '../types';
+import { ProviderMetadata, ProviderOptions } from '../types/provider-metadata';
 import {
   addLanguageModelUsage,
   calculateLanguageModelUsage,
@@ -33,6 +33,8 @@ import { toResponseMessages } from './to-response-messages';
 import { ToolCallArray } from './tool-call';
 import { ToolCallRepairFunction } from './tool-call-repair';
 import { ToolResultArray } from './tool-result';
+import { ToolSet } from './tool-set';
+import { asReasoningText, ReasoningDetail } from './reasoning-detail';
 
 const originalGenerateId = createIdGenerator({
   prefix: 'aitxt',
@@ -43,6 +45,15 @@ const originalGenerateMessageId = createIdGenerator({
   prefix: 'msg',
   size: 24,
 });
+
+/**
+Callback that is set using the `onStepFinish` option.
+
+@param stepResult - The result of the step.
+ */
+export type GenerateTextOnStepFinishCallback<TOOLS extends ToolSet> = (
+  stepResult: StepResult<TOOLS>,
+) => Promise<void> | void;
 
 /**
 Generate a text and call tools for a given prompt using a language model.
@@ -92,7 +103,7 @@ If set and supported by the model, calls will generate deterministic results.
 A result object that contains the generated text, the results of the tool calls, and additional information.
  */
 export async function generateText<
-  TOOLS extends Record<string, CoreTool>,
+  TOOLS extends ToolSet,
   OUTPUT = never,
   OUTPUT_PARTIAL = never,
 >({
@@ -110,7 +121,8 @@ export async function generateText<
   experimental_output: output,
   experimental_continueSteps: continueSteps = false,
   experimental_telemetry: telemetry,
-  experimental_providerMetadata: providerMetadata,
+  experimental_providerMetadata,
+  providerOptions = experimental_providerMetadata,
   experimental_activeTools: activeTools,
   experimental_repairToolCall: repairToolCall,
   _internal: {
@@ -134,7 +146,7 @@ The tools that the model can call. The model needs to support calling tools.
     /**
 The tool choice strategy. Default: 'auto'.
      */
-    toolChoice?: CoreToolChoice<TOOLS>;
+    toolChoice?: ToolChoice<TOOLS>;
 
     /**
 Maximum number of sequential LLM calls (steps), e.g. when you use tool calls. Must be at least 1.
@@ -163,10 +175,15 @@ Optional telemetry configuration (experimental).
     experimental_telemetry?: TelemetrySettings;
 
     /**
-Additional provider-specific metadata. They are passed through
+Additional provider-specific options. They are passed through
 to the provider from the AI SDK and enable provider-specific
 functionality that can be fully encapsulated in the provider.
  */
+    providerOptions?: ProviderOptions;
+
+    /**
+@deprecated Use `providerOptions` instead.
+     */
     experimental_providerMetadata?: ProviderMetadata;
 
     /**
@@ -188,7 +205,7 @@ A function that attempts to repair a tool call that failed to parse.
     /**
     Callback that is called when each step (LLM call) is finished, including intermediate steps.
     */
-    onStepFinish?: (event: StepResult<TOOLS>) => Promise<void> | void;
+    onStepFinish?: GenerateTextOnStepFinishCallback<TOOLS>;
 
     /**
      * Internal. For test use only. May change without notice.
@@ -257,9 +274,11 @@ A function that attempts to repair a tool call that failed to parse.
       > & { response: { id: string; timestamp: Date; modelId: string } };
       let currentToolCalls: ToolCallArray<TOOLS> = [];
       let currentToolResults: ToolResultArray<TOOLS> = [];
+      let currentReasoningDetails: Array<ReasoningDetail> = [];
       let stepCount = 0;
       const responseMessages: Array<ResponseMessage> = [];
       let text = '';
+      const sources: GenerateTextResult<TOOLS, OUTPUT>['sources'] = [];
       const steps: GenerateTextResult<TOOLS, OUTPUT>['steps'] = [];
       let usage: LanguageModelUsage = {
         completionTokens: 0,
@@ -285,7 +304,7 @@ A function that attempts to repair a tool call that failed to parse.
             messages: stepInputMessages,
           },
           modelSupportsImageUrls: model.supportsImageUrls,
-          modelSupportsUrl: model.supportsUrl,
+          modelSupportsUrl: model.supportsUrl?.bind(model), // support 'this' context
         });
 
         currentModelResponse = await retry(() =>
@@ -334,7 +353,7 @@ A function that attempts to repair a tool call that failed to parse.
                 inputFormat: promptFormat,
                 responseFormat: output?.responseFormat({ model }),
                 prompt: promptMessages,
-                providerMetadata,
+                providerMetadata: providerOptions,
                 abortSignal,
                 headers,
               });
@@ -450,6 +469,13 @@ A function that attempts to repair a tool call that failed to parse.
             ? text + stepText
             : stepText;
 
+        currentReasoningDetails = asReasoningDetails(
+          currentModelResponse.reasoning,
+        );
+
+        // sources:
+        sources.push(...(currentModelResponse.sources ?? []));
+
         // append to messages for potential next step:
         if (stepType === 'continue') {
           // continue step: update the last assistant message
@@ -471,6 +497,7 @@ A function that attempts to repair a tool call that failed to parse.
           responseMessages.push(
             ...toResponseMessages({
               text,
+              reasoning: asReasoningDetails(currentModelResponse.reasoning),
               tools: tools ?? ({} as TOOLS),
               toolCalls: currentToolCalls,
               toolResults: currentToolResults,
@@ -484,7 +511,10 @@ A function that attempts to repair a tool call that failed to parse.
         const currentStepResult: StepResult<TOOLS> = {
           stepType,
           text: stepText,
-          reasoning: currentModelResponse.reasoning,
+          // TODO v5: rename reasoning to reasoningText (and use reasoning for composite array)
+          reasoning: asReasoningText(currentReasoningDetails),
+          reasoningDetails: currentReasoningDetails,
+          sources: currentModelResponse.sources ?? [],
           toolCalls: currentToolCalls,
           toolResults: currentToolResults,
           finishReason: currentModelResponse.finishReason,
@@ -499,6 +529,7 @@ A function that attempts to repair a tool call that failed to parse.
             // deep clone msgs to avoid mutating past messages in multi-step:
             messages: structuredClone(responseMessages),
           },
+          providerMetadata: currentModelResponse.providerMetadata,
           experimental_providerMetadata: currentModelResponse.providerMetadata,
           isContinued: nextStepType === 'continue',
         };
@@ -530,7 +561,9 @@ A function that attempts to repair a tool call that failed to parse.
 
       return new DefaultGenerateTextResult({
         text,
-        reasoning: currentModelResponse.reasoning,
+        reasoning: asReasoningText(currentReasoningDetails),
+        reasoningDetails: currentReasoningDetails,
+        sources,
         outputResolver: () => {
           if (output == null) {
             throw new NoOutputSpecifiedError();
@@ -560,7 +593,7 @@ A function that attempts to repair a tool call that failed to parse.
   });
 }
 
-async function executeTools<TOOLS extends Record<string, CoreTool>>({
+async function executeTools<TOOLS extends ToolSet>({
   toolCalls,
   tools,
   tracer,
@@ -653,11 +686,15 @@ async function executeTools<TOOLS extends Record<string, CoreTool>>({
   );
 }
 
-class DefaultGenerateTextResult<TOOLS extends Record<string, CoreTool>, OUTPUT>
+class DefaultGenerateTextResult<TOOLS extends ToolSet, OUTPUT>
   implements GenerateTextResult<TOOLS, OUTPUT>
 {
   readonly text: GenerateTextResult<TOOLS, OUTPUT>['text'];
   readonly reasoning: GenerateTextResult<TOOLS, OUTPUT>['reasoning'];
+  readonly reasoningDetails: GenerateTextResult<
+    TOOLS,
+    OUTPUT
+  >['reasoningDetails'];
   readonly toolCalls: GenerateTextResult<TOOLS, OUTPUT>['toolCalls'];
   readonly toolResults: GenerateTextResult<TOOLS, OUTPUT>['toolResults'];
   readonly finishReason: GenerateTextResult<TOOLS, OUTPUT>['finishReason'];
@@ -669,8 +706,13 @@ class DefaultGenerateTextResult<TOOLS extends Record<string, CoreTool>, OUTPUT>
     TOOLS,
     OUTPUT
   >['experimental_providerMetadata'];
+  readonly providerMetadata: GenerateTextResult<
+    TOOLS,
+    OUTPUT
+  >['providerMetadata'];
   readonly response: GenerateTextResult<TOOLS, OUTPUT>['response'];
   readonly request: GenerateTextResult<TOOLS, OUTPUT>['request'];
+  readonly sources: GenerateTextResult<TOOLS, OUTPUT>['sources'];
 
   private readonly outputResolver: () => GenerateTextResult<
     TOOLS,
@@ -680,6 +722,7 @@ class DefaultGenerateTextResult<TOOLS extends Record<string, CoreTool>, OUTPUT>
   constructor(options: {
     text: GenerateTextResult<TOOLS, OUTPUT>['text'];
     reasoning: GenerateTextResult<TOOLS, OUTPUT>['reasoning'];
+    reasoningDetails: GenerateTextResult<TOOLS, OUTPUT>['reasoningDetails'];
     toolCalls: GenerateTextResult<TOOLS, OUTPUT>['toolCalls'];
     toolResults: GenerateTextResult<TOOLS, OUTPUT>['toolResults'];
     finishReason: GenerateTextResult<TOOLS, OUTPUT>['finishReason'];
@@ -687,19 +730,18 @@ class DefaultGenerateTextResult<TOOLS extends Record<string, CoreTool>, OUTPUT>
     warnings: GenerateTextResult<TOOLS, OUTPUT>['warnings'];
     logprobs: GenerateTextResult<TOOLS, OUTPUT>['logprobs'];
     steps: GenerateTextResult<TOOLS, OUTPUT>['steps'];
-    providerMetadata: GenerateTextResult<
-      TOOLS,
-      OUTPUT
-    >['experimental_providerMetadata'];
+    providerMetadata: GenerateTextResult<TOOLS, OUTPUT>['providerMetadata'];
     response: GenerateTextResult<TOOLS, OUTPUT>['response'];
     request: GenerateTextResult<TOOLS, OUTPUT>['request'];
     outputResolver: () => GenerateTextResult<
       TOOLS,
       OUTPUT
     >['experimental_output'];
+    sources: GenerateTextResult<TOOLS, OUTPUT>['sources'];
   }) {
     this.text = options.text;
     this.reasoning = options.reasoning;
+    this.reasoningDetails = options.reasoningDetails;
     this.toolCalls = options.toolCalls;
     this.toolResults = options.toolResults;
     this.finishReason = options.finishReason;
@@ -709,11 +751,36 @@ class DefaultGenerateTextResult<TOOLS extends Record<string, CoreTool>, OUTPUT>
     this.response = options.response;
     this.steps = options.steps;
     this.experimental_providerMetadata = options.providerMetadata;
+    this.providerMetadata = options.providerMetadata;
     this.logprobs = options.logprobs;
     this.outputResolver = options.outputResolver;
+    this.sources = options.sources;
   }
 
   get experimental_output() {
     return this.outputResolver();
   }
+}
+
+function asReasoningDetails(
+  reasoning:
+    | string
+    | Array<
+        | { type: 'text'; text: string; signature?: string }
+        | { type: 'redacted'; data: string }
+      >
+    | undefined,
+): Array<
+  | { type: 'text'; text: string; signature?: string }
+  | { type: 'redacted'; data: string }
+> {
+  if (reasoning == null) {
+    return [];
+  }
+
+  if (typeof reasoning === 'string') {
+    return [{ type: 'text', text: reasoning }];
+  }
+
+  return reasoning;
 }

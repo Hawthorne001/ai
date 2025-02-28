@@ -1,14 +1,16 @@
 import { ToolResultPart } from '../prompt';
-import { CoreTool } from '../tool/tool';
+import { ReasoningDetail } from './reasoning-detail';
 import { ResponseMessage } from './step-result';
 import { ToolCallArray } from './tool-call';
 import { ToolResultArray } from './tool-result';
+import { ToolSet } from './tool-set';
 
 /**
 Converts the result of a `generateText` call to a list of response messages.
  */
-export function toResponseMessages<TOOLS extends Record<string, CoreTool>>({
+export function toResponseMessages<TOOLS extends ToolSet>({
   text = '',
+  reasoning,
   tools,
   toolCalls,
   toolResults,
@@ -16,6 +18,7 @@ export function toResponseMessages<TOOLS extends Record<string, CoreTool>>({
   generateMessageId,
 }: {
   text: string | undefined;
+  reasoning: Array<ReasoningDetail>;
   tools: TOOLS;
   toolCalls: ToolCallArray<TOOLS>;
   toolResults: ToolResultArray<TOOLS>;
@@ -26,7 +29,15 @@ export function toResponseMessages<TOOLS extends Record<string, CoreTool>>({
 
   responseMessages.push({
     role: 'assistant',
-    content: [{ type: 'text', text }, ...toolCalls],
+    content: [
+      ...reasoning.map(part =>
+        part.type === 'text'
+          ? { ...part, type: 'reasoning' as const }
+          : { ...part, type: 'redacted-reasoning' as const },
+      ),
+      { type: 'text', text },
+      ...toolCalls,
+    ],
     id: messageId,
   });
 

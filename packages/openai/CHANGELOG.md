@@ -1,5 +1,88 @@
 # @ai-sdk/openai
 
+## 1.1.15
+
+### Patch Changes
+
+- d8216f8: feat (provider/openai): add gpt-4.5-preview to model id set
+
+## 1.1.14
+
+### Patch Changes
+
+- Updated dependencies [ddf9740]
+  - @ai-sdk/provider@1.0.9
+  - @ai-sdk/provider-utils@2.1.10
+
+## 1.1.13
+
+### Patch Changes
+
+- Updated dependencies [2761f06]
+  - @ai-sdk/provider@1.0.8
+  - @ai-sdk/provider-utils@2.1.9
+
+## 1.1.12
+
+### Patch Changes
+
+- ea159cb: chore (provider/openai): remove default streaming simulation for o1
+
+## 1.1.11
+
+### Patch Changes
+
+- Updated dependencies [2e898b4]
+  - @ai-sdk/provider-utils@2.1.8
+
+## 1.1.10
+
+### Patch Changes
+
+- Updated dependencies [3ff4ef8]
+  - @ai-sdk/provider-utils@2.1.7
+
+## 1.1.9
+
+### Patch Changes
+
+- c55b81a: fix (provider/openai): fix o3-mini streaming
+
+## 1.1.8
+
+### Patch Changes
+
+- 161be90: fix (provider/openai): fix model id typo
+
+## 1.1.7
+
+### Patch Changes
+
+- 0a2f026: feat (provider/openai): add o3-mini
+
+## 1.1.6
+
+### Patch Changes
+
+- d89c3b9: feat (provider): add image model support to provider specification
+- Updated dependencies [d89c3b9]
+  - @ai-sdk/provider@1.0.7
+  - @ai-sdk/provider-utils@2.1.6
+
+## 1.1.5
+
+### Patch Changes
+
+- Updated dependencies [3a602ca]
+  - @ai-sdk/provider-utils@2.1.5
+
+## 1.1.4
+
+### Patch Changes
+
+- Updated dependencies [066206e]
+  - @ai-sdk/provider-utils@2.1.4
+
 ## 1.1.3
 
 ### Patch Changes

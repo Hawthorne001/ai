@@ -4,29 +4,40 @@ import {
   LanguageModelV1CallWarning,
   LanguageModelV1StreamPart,
 } from '@ai-sdk/provider';
+import { delay } from '@ai-sdk/provider-utils';
 import {
   convertArrayToReadableStream,
   convertAsyncIterableToArray,
   convertReadableStreamToArray,
   convertResponseStreamToArray,
+  mockId,
 } from '@ai-sdk/provider-utils/test';
 import { jsonSchema } from '@ai-sdk/ui-utils';
 import assert from 'node:assert';
 import { z } from 'zod';
 import { ToolExecutionError } from '../../errors/tool-execution-error';
 import { StreamData } from '../../streams/stream-data';
-import { delay } from '../../util/delay';
 import { createDataStream } from '../data-stream/create-data-stream';
-import { mockId } from '../test/mock-id';
 import { MockLanguageModelV1 } from '../test/mock-language-model-v1';
 import { createMockServerResponse } from '../test/mock-server-response';
 import { MockTracer } from '../test/mock-tracer';
 import { mockValues } from '../test/mock-values';
-import { CoreTool, tool } from '../tool/tool';
+import { tool } from '../tool/tool';
 import { object, text } from './output';
 import { StepResult } from './step-result';
 import { streamText } from './stream-text';
 import { StreamTextResult, TextStreamPart } from './stream-text-result';
+import { ToolSet } from './tool-set';
+
+const defaultSettings = () =>
+  ({
+    prompt: 'prompt',
+    experimental_generateMessageId: mockId({ prefix: 'msg' }),
+    _internal: {
+      generateId: mockId({ prefix: 'id' }),
+      currentDate: () => new Date(0),
+    },
+  } as const);
 
 function createTestModel({
   stream = convertArrayToReadableStream([
@@ -58,15 +69,76 @@ function createTestModel({
   warnings?: LanguageModelV1CallWarning[];
 } = {}): LanguageModelV1 {
   return new MockLanguageModelV1({
-    doStream: async () => ({
-      stream,
-      rawCall,
-      rawResponse,
-      request,
-      warnings,
-    }),
+    doStream: async () => ({ stream, rawCall, rawResponse, request, warnings }),
   });
 }
+
+const modelWithSources = new MockLanguageModelV1({
+  doStream: async () => ({
+    stream: convertArrayToReadableStream([
+      {
+        type: 'source',
+        source: {
+          sourceType: 'url' as const,
+          id: '123',
+          url: 'https://example.com',
+          title: 'Example',
+          providerMetadata: { provider: { custom: 'value' } },
+        },
+      },
+      { type: 'text-delta', textDelta: 'Hello!' },
+      {
+        type: 'source',
+        source: {
+          sourceType: 'url' as const,
+          id: '456',
+          url: 'https://example.com/2',
+          title: 'Example 2',
+          providerMetadata: { provider: { custom: 'value2' } },
+        },
+      },
+      {
+        type: 'finish',
+        finishReason: 'stop',
+        logprobs: undefined,
+        usage: { completionTokens: 10, promptTokens: 3 },
+      },
+    ]),
+    rawCall: { rawPrompt: 'prompt', rawSettings: {} },
+  }),
+});
+
+const modelWithReasoning = new MockLanguageModelV1({
+  doStream: async () => ({
+    stream: convertArrayToReadableStream([
+      {
+        type: 'response-metadata',
+        id: 'id-0',
+        modelId: 'mock-model-id',
+        timestamp: new Date(0),
+      },
+      { type: 'reasoning', textDelta: 'I will open the conversation' },
+      { type: 'reasoning', textDelta: ' with witty banter. ' },
+      { type: 'reasoning-signature', signature: '1234567890' },
+      { type: 'redacted-reasoning', data: 'redacted-reasoning-data' },
+      { type: 'reasoning', textDelta: 'Once the user has relaxed,' },
+      {
+        type: 'reasoning',
+        textDelta: ' I will pry for valuable information.',
+      },
+      { type: 'reasoning-signature', signature: '1234567890' },
+      { type: 'text-delta', textDelta: 'Hi' },
+      { type: 'text-delta', textDelta: ' there!' },
+      {
+        type: 'finish',
+        finishReason: 'stop',
+        logprobs: undefined,
+        usage: { completionTokens: 10, promptTokens: 3 },
+      },
+    ]),
+    rawCall: { rawPrompt: 'prompt', rawSettings: {} },
+  }),
+});
 
 describe('streamText', () => {
   describe('result.textStream', () => {
@@ -134,56 +206,23 @@ describe('streamText', () => {
         prompt: 'test-input',
       });
 
-      assert.deepStrictEqual(
+      expect(
         await convertAsyncIterableToArray(result.textStream),
-        ['Hello', ', ', 'world!'],
-      );
+      ).toMatchSnapshot();
     });
 
     it('should not include reasoning content in textStream', async () => {
       const result = streamText({
-        model: new MockLanguageModelV1({
-          doStream: async () => ({
-            stream: convertArrayToReadableStream([
-              {
-                type: 'reasoning',
-                textDelta: 'I will open the conversation',
-              },
-              {
-                type: 'reasoning',
-                textDelta: ' with witty banter.',
-              },
-              {
-                type: 'reasoning',
-                textDelta: 'Once the user has relaxed,',
-              },
-              {
-                type: 'reasoning',
-                textDelta: ' I will pry for valuable information.',
-              },
-              { type: 'text-delta', textDelta: 'Hello' },
-              { type: 'text-delta', textDelta: ', ' },
-              { type: 'text-delta', textDelta: `world!` },
-              {
-                type: 'finish',
-                finishReason: 'stop',
-                logprobs: undefined,
-                usage: { completionTokens: 10, promptTokens: 3 },
-              },
-            ]),
-            rawCall: { rawPrompt: 'prompt', rawSettings: {} },
-          }),
-        }),
-        prompt: 'test-input',
+        model: modelWithReasoning,
+        ...defaultSettings(),
       });
 
-      assert.deepStrictEqual(
+      expect(
         await convertAsyncIterableToArray(result.textStream),
-        ['Hello', ', ', 'world!'],
-      );
+      ).toMatchSnapshot();
     });
 
-    it('should re-throw error in doStream', async () => {
+    it('should swallow error to prevent server crash', async () => {
       const result = streamText({
         model: new MockLanguageModelV1({
           doStream: async () => {
@@ -193,9 +232,9 @@ describe('streamText', () => {
         prompt: 'test-input',
       });
 
-      await expect(async () => {
-        await convertAsyncIterableToArray(result.textStream);
-      }).rejects.toThrow('test error');
+      expect(
+        await convertAsyncIterableToArray(result.textStream),
+      ).toMatchSnapshot();
     });
   });
 
@@ -249,28 +288,20 @@ describe('streamText', () => {
       ).toMatchSnapshot();
     });
 
-    it('should include reasoning content in fullStream', async () => {
+    it('should send reasoning deltas', async () => {
       const result = streamText({
-        model: new MockLanguageModelV1({
-          doStream: async () => ({
-            stream: convertArrayToReadableStream([
-              { type: 'reasoning', textDelta: 'I will open the conversation' },
-              { type: 'reasoning', textDelta: ' with witty banter.' },
-              { type: 'reasoning', textDelta: 'Once the user has relaxed,' },
-              {
-                type: 'reasoning',
-                textDelta: ' I will pry for valuable information.',
-              },
-              {
-                type: 'finish',
-                finishReason: 'stop',
-                logprobs: undefined,
-                usage: { completionTokens: 10, promptTokens: 3 },
-              },
-            ]),
-            rawCall: { rawPrompt: 'prompt', rawSettings: {} },
-          }),
-        }),
+        model: modelWithReasoning,
+        ...defaultSettings(),
+      });
+
+      expect(
+        await convertAsyncIterableToArray(result.fullStream),
+      ).toMatchSnapshot();
+    });
+
+    it('should send sources', async () => {
+      const result = streamText({
+        model: modelWithSources,
         prompt: 'test-input',
         _internal: {
           currentDate: mockValues(new Date(2000)),
@@ -910,35 +941,34 @@ describe('streamText', () => {
       const mockResponse = createMockServerResponse();
 
       const result = streamText({
-        model: createTestModel({
-          stream: convertArrayToReadableStream([
-            {
-              type: 'response-metadata',
-              id: 'id-0',
-              modelId: 'mock-model-id',
-              timestamp: new Date(0),
-            },
-            { type: 'reasoning', textDelta: 'I will open the conversation' },
-            { type: 'reasoning', textDelta: ' with witty banter.' },
-            { type: 'reasoning', textDelta: 'Once the user has relaxed,' },
-            {
-              type: 'reasoning',
-              textDelta: ' I will pry for valuable information.',
-            },
-            {
-              type: 'finish',
-              finishReason: 'stop',
-              logprobs: undefined,
-              usage: { completionTokens: 10, promptTokens: 3 },
-            },
-          ]),
-        }),
-        prompt: 'test-input',
-        experimental_generateMessageId: mockId({ prefix: 'msg' }),
+        model: modelWithReasoning,
+        ...defaultSettings(),
       });
 
       result.pipeDataStreamToResponse(mockResponse, {
         sendReasoning: true,
+      });
+
+      await mockResponse.waitForEnd();
+
+      expect(mockResponse.statusCode).toBe(200);
+      expect(mockResponse.headers).toEqual({
+        'Content-Type': 'text/plain; charset=utf-8',
+        'X-Vercel-AI-Data-Stream': 'v1',
+      });
+      expect(mockResponse.getDecodedChunks()).toMatchSnapshot();
+    });
+
+    it('should write source content to a Node.js response-like object', async () => {
+      const mockResponse = createMockServerResponse();
+
+      const result = streamText({
+        model: modelWithSources,
+        ...defaultSettings(),
+      });
+
+      result.pipeDataStreamToResponse(mockResponse, {
+        sendSources: true,
       });
 
       await mockResponse.waitForEnd();
@@ -987,8 +1017,7 @@ describe('streamText', () => {
     it('should create a data stream', async () => {
       const result = streamText({
         model: createTestModel(),
-        prompt: 'test-input',
-        experimental_generateMessageId: mockId({ prefix: 'msg' }),
+        ...defaultSettings(),
       });
 
       const dataStream = result.toDataStream();
@@ -1003,8 +1032,7 @@ describe('streamText', () => {
     it('should support merging with existing stream data', async () => {
       const result = streamText({
         model: createTestModel(),
-        prompt: 'test-input',
-        experimental_generateMessageId: mockId({ prefix: 'msg' }),
+        ...defaultSettings(),
       });
 
       const streamData = new StreamData();
@@ -1059,8 +1087,7 @@ describe('streamText', () => {
             execute: async ({ value }) => `${value}-result`,
           },
         },
-        prompt: 'test-input',
-        experimental_generateMessageId: mockId({ prefix: 'msg' }),
+        ...defaultSettings(),
       });
 
       expect(
@@ -1109,9 +1136,8 @@ describe('streamText', () => {
             execute: async ({ value }) => `${value}-result`,
           },
         },
-        prompt: 'test-input',
         toolCallStreaming: true,
-        experimental_generateMessageId: mockId({ prefix: 'msg' }),
+        ...defaultSettings(),
       });
 
       expect(
@@ -1128,8 +1154,7 @@ describe('streamText', () => {
             { type: 'error', error: 'error' },
           ]),
         }),
-        prompt: 'test-input',
-        experimental_generateMessageId: mockId({ prefix: 'msg' }),
+        ...defaultSettings(),
       });
 
       const dataStream = result.toDataStream();
@@ -1148,8 +1173,7 @@ describe('streamText', () => {
             { type: 'error', error: 'error' },
           ]),
         }),
-        prompt: 'test-input',
-        experimental_generateMessageId: mockId({ prefix: 'msg' }),
+        ...defaultSettings(),
       });
 
       const dataStream = result.toDataStream({
@@ -1175,11 +1199,40 @@ describe('streamText', () => {
             },
           ]),
         }),
-        prompt: 'test-input',
-        experimental_generateMessageId: mockId({ prefix: 'msg' }),
+        ...defaultSettings(),
       });
 
       const dataStream = result.toDataStream({ sendUsage: false });
+
+      expect(
+        await convertReadableStreamToArray(
+          dataStream.pipeThrough(new TextDecoderStream()),
+        ),
+      ).toMatchSnapshot();
+    });
+
+    it('should send reasoning content when sendReasoning is true', async () => {
+      const result = streamText({
+        model: modelWithReasoning,
+        ...defaultSettings(),
+      });
+
+      const dataStream = result.toDataStream({ sendReasoning: true });
+
+      expect(
+        await convertReadableStreamToArray(
+          dataStream.pipeThrough(new TextDecoderStream()),
+        ),
+      ).toMatchSnapshot();
+    });
+
+    it('should send source content when sendSources is true', async () => {
+      const result = streamText({
+        model: modelWithSources,
+        ...defaultSettings(),
+      });
+
+      const dataStream = result.toDataStream({ sendSources: true });
 
       expect(
         await convertReadableStreamToArray(
@@ -1416,8 +1469,7 @@ describe('streamText', () => {
         prompt: 'test-input',
       });
 
-      // consume stream (runs in parallel)
-      convertAsyncIterableToArray(result.textStream);
+      result.consumeStream();
 
       expect(await result.warnings).toStrictEqual([
         { type: 'other', message: 'test-warning' },
@@ -1442,8 +1494,7 @@ describe('streamText', () => {
         prompt: 'test-input',
       });
 
-      // consume stream (runs in parallel)
-      convertAsyncIterableToArray(result.textStream);
+      result.consumeStream();
 
       assert.deepStrictEqual(await result.usage, {
         completionTokens: 10,
@@ -1470,8 +1521,7 @@ describe('streamText', () => {
         prompt: 'test-input',
       });
 
-      // consume stream (runs in parallel)
-      convertAsyncIterableToArray(result.textStream);
+      result.consumeStream();
 
       expect(await result.finishReason).toStrictEqual('stop');
     });
@@ -1497,12 +1547,24 @@ describe('streamText', () => {
         prompt: 'test-input',
       });
 
-      // consume stream (runs in parallel)
-      convertAsyncIterableToArray(result.textStream);
+      result.consumeStream();
 
-      expect(await result.experimental_providerMetadata).toStrictEqual({
+      expect(await result.providerMetadata).toStrictEqual({
         testProvider: { testKey: 'testValue' },
       });
+    });
+  });
+
+  describe('result.response.messages', () => {
+    it('should contain reasoning', async () => {
+      const result = streamText({
+        model: modelWithReasoning,
+        ...defaultSettings(),
+      });
+
+      result.consumeStream();
+
+      expect((await result.response).messages).toMatchSnapshot();
     });
   });
 
@@ -1530,8 +1592,7 @@ describe('streamText', () => {
         prompt: 'test-input',
       });
 
-      // consume stream (runs in parallel)
-      convertAsyncIterableToArray(result.textStream);
+      result.consumeStream();
 
       expect(await result.request).toStrictEqual({
         body: 'test body',
@@ -1560,12 +1621,10 @@ describe('streamText', () => {
           ]),
           rawResponse: { headers: { call: '2' } },
         }),
-        prompt: 'test-input',
-        experimental_generateMessageId: mockId({ prefix: 'msg' }),
+        ...defaultSettings(),
       });
 
-      // consume stream (runs in parallel)
-      convertAsyncIterableToArray(result.textStream);
+      result.consumeStream();
 
       expect(await result.response).toMatchSnapshot();
     });
@@ -1575,94 +1634,73 @@ describe('streamText', () => {
     it('should resolve with full text', async () => {
       const result = streamText({
         model: createTestModel(),
-        prompt: 'test-input',
+        ...defaultSettings(),
       });
 
-      // consume stream (runs in parallel)
-      convertAsyncIterableToArray(result.textStream);
+      result.consumeStream();
 
-      assert.strictEqual(await result.text, 'Hello, world!');
+      expect(await result.text).toMatchSnapshot();
     });
   });
 
   describe('result.reasoning', () => {
     it('should contain reasoning from model response', async () => {
       const result = streamText({
-        model: new MockLanguageModelV1({
-          doStream: async () => ({
-            stream: convertArrayToReadableStream([
-              {
-                type: 'reasoning',
-                textDelta: 'I will open the conversation',
-              },
-              {
-                type: 'reasoning',
-                textDelta: ' with witty banter.',
-              },
-              { type: 'text-delta', textDelta: 'Hello' },
-              { type: 'text-delta', textDelta: ', ' },
-              { type: 'text-delta', textDelta: `world!` },
-              {
-                type: 'finish',
-                finishReason: 'stop',
-                logprobs: undefined,
-                usage: { completionTokens: 10, promptTokens: 3 },
-              },
-            ]),
-            rawCall: { rawPrompt: 'prompt', rawSettings: {} },
-          }),
-        }),
-        prompt: 'test-input',
+        model: modelWithReasoning,
+        ...defaultSettings(),
       });
 
-      // consume stream
-      await convertAsyncIterableToArray(result.textStream);
+      result.consumeStream();
 
-      expect(await result.reasoning).toStrictEqual(
-        'I will open the conversation with witty banter.',
-      );
+      expect(await result.reasoning).toMatchSnapshot();
+    });
+  });
+
+  describe('result.reasoningDetails', () => {
+    it('should contain reasoning from model response', async () => {
+      const result = streamText({
+        model: modelWithReasoning,
+        ...defaultSettings(),
+      });
+
+      result.consumeStream();
+
+      expect(await result.reasoningDetails).toMatchSnapshot();
+    });
+  });
+
+  describe('result.sources', () => {
+    it('should contain sources', async () => {
+      const result = streamText({
+        model: modelWithSources,
+        ...defaultSettings(),
+      });
+
+      result.consumeStream();
+
+      expect(await result.sources).toMatchSnapshot();
     });
   });
 
   describe('result.steps', () => {
     it('should add the reasoning from the model response to the step result', async () => {
       const result = streamText({
-        model: new MockLanguageModelV1({
-          doStream: async () => ({
-            stream: convertArrayToReadableStream([
-              {
-                type: 'reasoning',
-                textDelta: 'I will open the conversation',
-              },
-              {
-                type: 'reasoning',
-                textDelta: ' with witty banter.',
-              },
-              { type: 'text-delta', textDelta: 'Hello' },
-              { type: 'text-delta', textDelta: ', ' },
-              { type: 'text-delta', textDelta: `world!` },
-              {
-                type: 'finish',
-                finishReason: 'stop',
-                logprobs: undefined,
-                usage: { completionTokens: 10, promptTokens: 3 },
-              },
-            ]),
-            rawCall: { rawPrompt: 'prompt', rawSettings: {} },
-          }),
-        }),
-        prompt: 'test-input',
-        experimental_generateMessageId: mockId({
-          prefix: 'msg',
-        }),
-        _internal: {
-          generateId: mockId({ prefix: 'id' }),
-          currentDate: () => new Date(0),
-        },
+        model: modelWithReasoning,
+        ...defaultSettings(),
       });
 
-      // consume stream
-      await convertAsyncIterableToArray(result.textStream);
+      result.consumeStream();
+
+      expect(await result.steps).toMatchSnapshot();
+    });
+
+    it('should add the sources from the model response to the step result', async () => {
+      const result = streamText({
+        model: modelWithSources,
+        ...defaultSettings(),
+      });
+
+      result.consumeStream();
 
       expect(await result.steps).toMatchSnapshot();
     });
@@ -1696,8 +1734,7 @@ describe('streamText', () => {
         prompt: 'test-input',
       });
 
-      // consume stream (runs in parallel)
-      convertAsyncIterableToArray(result.textStream);
+      result.consumeStream();
 
       expect(await result.toolCalls).toStrictEqual([
         {
@@ -1739,8 +1776,7 @@ describe('streamText', () => {
         prompt: 'test-input',
       });
 
-      // consume stream (runs in parallel)
-      convertAsyncIterableToArray(result.textStream);
+      result.consumeStream();
 
       assert.deepStrictEqual(await result.toolResults, [
         {
@@ -1762,6 +1798,7 @@ describe('streamText', () => {
           type:
             | 'text-delta'
             | 'reasoning'
+            | 'source'
             | 'tool-call'
             | 'tool-call-streaming-start'
             | 'tool-call-delta'
@@ -1773,7 +1810,7 @@ describe('streamText', () => {
     beforeEach(async () => {
       result = [];
 
-      const { textStream } = streamText({
+      const resultObject = streamText({
         model: createTestModel({
           stream: convertArrayToReadableStream([
             { type: 'text-delta', textDelta: 'Hello' },
@@ -1801,6 +1838,16 @@ describe('streamText', () => {
               toolCallType: 'function',
               toolName: 'tool1',
               argsTextDelta: '"}',
+            },
+            {
+              type: 'source',
+              source: {
+                sourceType: 'url' as const,
+                id: '123',
+                url: 'https://example.com',
+                title: 'Example',
+                providerMetadata: { provider: { custom: 'value' } },
+              },
             },
             {
               type: 'tool-call',
@@ -1834,55 +1881,33 @@ describe('streamText', () => {
         },
       });
 
-      // consume stream
-      await convertAsyncIterableToArray(textStream);
+      await resultObject.consumeStream();
     });
 
     it('should return events in order', async () => {
-      assert.deepStrictEqual(result, [
-        { type: 'text-delta', textDelta: 'Hello' },
-        {
-          type: 'tool-call-streaming-start',
-          toolCallId: '1',
-          toolName: 'tool1',
+      expect(result).toMatchSnapshot();
+    });
+  });
+
+  describe('options.onError', () => {
+    it('should invoke onError', async () => {
+      const result: Array<{ error: unknown }> = [];
+
+      const resultObject = streamText({
+        model: new MockLanguageModelV1({
+          doStream: async () => {
+            throw new Error('test error');
+          },
+        }),
+        prompt: 'test-input',
+        onError(event) {
+          result.push(event);
         },
-        {
-          type: 'tool-call-delta',
-          argsTextDelta: '{"value": "',
-          toolCallId: '1',
-          toolName: 'tool1',
-        },
-        {
-          type: 'reasoning',
-          textDelta: 'Feeling clever',
-        },
-        {
-          type: 'tool-call-delta',
-          argsTextDelta: 'test',
-          toolCallId: '1',
-          toolName: 'tool1',
-        },
-        {
-          type: 'tool-call-delta',
-          argsTextDelta: '"}',
-          toolCallId: '1',
-          toolName: 'tool1',
-        },
-        {
-          type: 'tool-call',
-          toolCallId: '1',
-          toolName: 'tool1',
-          args: { value: 'test' },
-        },
-        {
-          type: 'tool-result',
-          toolCallId: '1',
-          toolName: 'tool1',
-          args: { value: 'test' },
-          result: 'test-result',
-        },
-        { type: 'text-delta', textDelta: ' World' },
-      ]);
+      });
+
+      await resultObject.consumeStream();
+
+      expect(result).toStrictEqual([{ error: new Error('test error') }]);
     });
   });
 
@@ -1892,7 +1917,7 @@ describe('streamText', () => {
         Required<Parameters<typeof streamText>[0]>['onFinish']
       >[0];
 
-      const { textStream } = streamText({
+      const resultObject = streamText({
         model: createTestModel({
           stream: convertArrayToReadableStream([
             {
@@ -1936,7 +1961,30 @@ describe('streamText', () => {
         experimental_generateMessageId: mockId({ prefix: 'msg' }),
       });
 
-      await convertAsyncIterableToArray(textStream); // consume stream
+      await resultObject.consumeStream();
+
+      expect(result).toMatchSnapshot();
+    });
+
+    it('should send sources', async () => {
+      let result!: Parameters<
+        Required<Parameters<typeof streamText>[0]>['onFinish']
+      >[0];
+
+      const resultObject = streamText({
+        model: modelWithSources,
+        prompt: 'test-input',
+        onFinish: async event => {
+          result = event as unknown as typeof result;
+        },
+        experimental_generateMessageId: mockId({ prefix: 'msg' }),
+        _internal: {
+          generateId: mockId({ prefix: 'id' }),
+          currentDate: () => new Date(0),
+        },
+      });
+
+      await resultObject.consumeStream();
 
       expect(result).toMatchSnapshot();
     });
@@ -1981,7 +2029,7 @@ describe('streamText', () => {
         experimental_generateMessageId: mockId({ prefix: 'msg' }),
       });
 
-      await convertAsyncIterableToArray(result.textStream); // consume stream
+      result.consumeStream();
 
       expect((await result.response).messages).toMatchSnapshot();
     });
@@ -2016,7 +2064,7 @@ describe('streamText', () => {
         experimental_generateMessageId: mockId({ prefix: 'msg' }),
       });
 
-      await convertAsyncIterableToArray(result.textStream); // consume stream
+      result.consumeStream();
 
       expect((await result.response).messages).toMatchSnapshot();
     });
@@ -2214,7 +2262,7 @@ describe('streamText', () => {
 
       describe('callbacks', () => {
         beforeEach(async () => {
-          await convertAsyncIterableToArray(result.fullStream); // consume stream
+          await result.consumeStream();
         });
 
         it('onFinish should send correct information', async () => {
@@ -2228,7 +2276,7 @@ describe('streamText', () => {
 
       describe('value promises', () => {
         beforeEach(async () => {
-          await convertAsyncIterableToArray(result.fullStream); // consume stream
+          await result.consumeStream();
         });
 
         it('result.usage should contain total token usage', async () => {
@@ -2257,7 +2305,7 @@ describe('streamText', () => {
       });
 
       it('should record telemetry data for each step', async () => {
-        await convertAsyncIterableToArray(result.fullStream); // consume stream
+        await result.consumeStream();
         expect(tracer.jsonSpans).toMatchSnapshot();
       });
     });
@@ -2347,6 +2395,16 @@ describe('streamText', () => {
                       },
                       // case where there is no leading nor trailing whitespace:
                       { type: 'text-delta', textDelta: 'no-' },
+                      {
+                        type: 'source',
+                        source: {
+                          sourceType: 'url' as const,
+                          id: '123',
+                          url: 'https://example.com',
+                          title: 'Example',
+                          providerMetadata: { provider: { custom: 'value' } },
+                        },
+                      },
                       { type: 'text-delta', textDelta: 'whitespace' },
                       {
                         type: 'finish',
@@ -2397,8 +2455,28 @@ describe('streamText', () => {
                         modelId: 'mock-model-id',
                         timestamp: new Date(1000),
                       },
+                      {
+                        type: 'source',
+                        source: {
+                          sourceType: 'url' as const,
+                          id: '456',
+                          url: 'https://example.com/2',
+                          title: 'Example 2',
+                          providerMetadata: { provider: { custom: 'value2' } },
+                        },
+                      },
                       // set up trailing whitespace for next step:
                       { type: 'text-delta', textDelta: 'immediatefollow  ' },
+                      {
+                        type: 'source',
+                        source: {
+                          sourceType: 'url' as const,
+                          id: '789',
+                          url: 'https://example.com/3',
+                          title: 'Example 3',
+                          providerMetadata: { provider: { custom: 'value3' } },
+                        },
+                      },
                       {
                         type: 'finish',
                         finishReason: 'length',
@@ -2508,7 +2586,7 @@ describe('streamText', () => {
 
       describe('callbacks', () => {
         beforeEach(async () => {
-          await convertAsyncIterableToArray(result.fullStream); // consume stream
+          await result.consumeStream();
         });
 
         it('onFinish should send correct information', async () => {
@@ -2522,7 +2600,7 @@ describe('streamText', () => {
 
       describe('value promises', () => {
         beforeEach(async () => {
-          await convertAsyncIterableToArray(result.fullStream); // consume stream
+          await result.consumeStream();
         });
 
         it('result.usage should contain total token usage', async () => {
@@ -2565,7 +2643,7 @@ describe('streamText', () => {
       });
 
       it('should record telemetry data for each step', async () => {
-        await convertAsyncIterableToArray(result.fullStream); // consume stream
+        await result.consumeStream();
         expect(tracer.jsonSpans).toMatchSnapshot();
       });
 
@@ -2577,6 +2655,11 @@ describe('streamText', () => {
             dataStream.pipeThrough(new TextDecoderStream()),
           ),
         ).toMatchSnapshot();
+      });
+
+      it('result.sources should contain sources from all steps', async () => {
+        result.consumeStream();
+        expect(await result.sources).toMatchSnapshot();
       });
     });
   });
@@ -2641,7 +2724,7 @@ describe('streamText', () => {
           },
         }),
         prompt: 'test-input',
-        experimental_providerMetadata: {
+        providerOptions: {
           aProvider: { someKey: 'someValue' },
         },
       });
@@ -2716,8 +2799,7 @@ describe('streamText', () => {
         },
       });
 
-      // consume stream
-      await convertAsyncIterableToArray(result.textStream);
+      await result.consumeStream();
 
       expect(tracer.jsonSpans).toMatchSnapshot();
     });
@@ -2748,8 +2830,7 @@ describe('streamText', () => {
         _internal: { now: mockValues(0, 100, 500) },
       });
 
-      // consume stream
-      await convertAsyncIterableToArray(result.textStream);
+      await result.consumeStream();
 
       expect(tracer.jsonSpans).toMatchSnapshot();
     });
@@ -2790,8 +2871,7 @@ describe('streamText', () => {
         _internal: { now: mockValues(0, 100, 500) },
       });
 
-      // consume stream
-      await convertAsyncIterableToArray(result.textStream);
+      await result.consumeStream();
 
       expect(tracer.jsonSpans).toMatchSnapshot();
     });
@@ -2837,8 +2917,7 @@ describe('streamText', () => {
         _internal: { now: mockValues(0, 100, 500) },
       });
 
-      // consume stream
-      await convertAsyncIterableToArray(result.textStream);
+      await result.consumeStream();
 
       expect(tracer.jsonSpans).toMatchSnapshot();
     });
@@ -3012,6 +3091,47 @@ describe('streamText', () => {
         await convertAsyncIterableToArray(result.textStream),
       ).toStrictEqual(['Hello']);
     });
+
+    it('should support models that use "this" context in supportsUrl', async () => {
+      let supportsUrlCalled = false;
+      class MockLanguageModelWithImageSupport extends MockLanguageModelV1 {
+        readonly supportsImageUrls = false;
+
+        constructor() {
+          super({
+            supportsUrl(url: URL) {
+              supportsUrlCalled = true;
+              // Reference 'this' to verify context
+              return this.modelId === 'mock-model-id';
+            },
+            doStream: async () => ({
+              stream: convertArrayToReadableStream([
+                { type: 'text-delta', textDelta: 'Hello' },
+                { type: 'text-delta', textDelta: ', ' },
+                { type: 'text-delta', textDelta: 'world!' },
+              ]),
+              rawCall: { rawPrompt: 'prompt', rawSettings: {} },
+            }),
+          });
+        }
+      }
+
+      const model = new MockLanguageModelWithImageSupport();
+      const result = streamText({
+        model,
+        messages: [
+          {
+            role: 'user',
+            content: [{ type: 'image', image: 'https://example.com/test.jpg' }],
+          },
+        ],
+      });
+
+      await result.consumeStream();
+
+      expect(supportsUrlCalled).toBe(true);
+      expect(await result.text).toBe('Hello, world!');
+    });
   });
 
   describe('tool execution errors', () => {
@@ -3080,6 +3200,7 @@ describe('streamText', () => {
         {
           type: 'step-finish',
           messageId: expect.any(String),
+          providerMetadata: undefined,
           experimental_providerMetadata: undefined,
           finishReason: 'stop',
           isContinued: false,
@@ -3100,6 +3221,7 @@ describe('streamText', () => {
         },
         {
           type: 'finish',
+          providerMetadata: undefined,
           experimental_providerMetadata: undefined,
           finishReason: 'stop',
           logprobs: undefined,
@@ -3122,7 +3244,7 @@ describe('streamText', () => {
   describe('options.transform', () => {
     describe('with base transformation', () => {
       const upperCaseTransform =
-        <TOOLS extends Record<string, CoreTool>>() =>
+        <TOOLS extends ToolSet>() =>
         (options: { tools: TOOLS }) =>
           new TransformStream<TextStreamPart<TOOLS>, TextStreamPart<TOOLS>>({
             transform(chunk, controller) {
@@ -3157,8 +3279,8 @@ describe('streamText', () => {
               }
 
               if (chunk.type === 'finish') {
-                if (chunk.experimental_providerMetadata?.testProvider != null) {
-                  chunk.experimental_providerMetadata.testProvider = {
+                if (chunk.providerMetadata?.testProvider != null) {
+                  chunk.providerMetadata.testProvider = {
                     testKey: 'TEST VALUE',
                   };
                 }
@@ -3187,8 +3309,7 @@ describe('streamText', () => {
           prompt: 'test-input',
         });
 
-        // consume stream
-        await convertAsyncIterableToArray(result.fullStream);
+        await result.consumeStream();
 
         expect(await result.text).toStrictEqual('HELLO, WORLD!');
       });
@@ -3200,8 +3321,7 @@ describe('streamText', () => {
           prompt: 'test-input',
         });
 
-        // consume stream
-        await convertAsyncIterableToArray(result.fullStream);
+        await result.consumeStream();
 
         expect(await result.response).toStrictEqual({
           id: expect.any(String),
@@ -3252,8 +3372,7 @@ describe('streamText', () => {
           prompt: 'test-input',
         });
 
-        // consume stream
-        await convertAsyncIterableToArray(result.fullStream);
+        await result.consumeStream();
 
         expect(await result.usage).toStrictEqual({
           completionTokens: 100,
@@ -3287,8 +3406,7 @@ describe('streamText', () => {
           prompt: 'test-input',
         });
 
-        // consume stream
-        await convertAsyncIterableToArray(result.fullStream);
+        await result.consumeStream();
 
         expect(await result.finishReason).toStrictEqual('stop');
       });
@@ -3323,8 +3441,7 @@ describe('streamText', () => {
           prompt: 'test-input',
         });
 
-        // consume stream
-        await convertAsyncIterableToArray(result.fullStream);
+        await result.consumeStream();
 
         expect(await result.toolCalls).toStrictEqual([
           {
@@ -3366,8 +3483,7 @@ describe('streamText', () => {
           prompt: 'test-input',
         });
 
-        // consume stream
-        await convertAsyncIterableToArray(result.fullStream);
+        await result.consumeStream();
 
         expect(await result.toolResults).toStrictEqual([
           {
@@ -3414,88 +3530,12 @@ describe('streamText', () => {
           },
           experimental_transform: upperCaseTransform(),
           prompt: 'test-input',
+          experimental_generateMessageId: mockId({ prefix: 'msg' }),
         });
 
-        // consume stream
-        await convertAsyncIterableToArray(result.fullStream);
+        result.consumeStream();
 
-        expect(await result.steps).toStrictEqual([
-          {
-            stepType: 'initial',
-            text: 'HELLO, WORLD!',
-            reasoning: undefined,
-            experimental_providerMetadata: undefined,
-            finishReason: 'stop',
-            isContinued: false,
-            logprobs: undefined,
-            request: {},
-            response: {
-              headers: undefined,
-              id: 'id-0',
-              messages: [
-                {
-                  id: expect.any(String),
-                  content: [
-                    {
-                      text: 'HELLO, WORLD!',
-                      type: 'text',
-                    },
-                    {
-                      args: {
-                        value: 'VALUE',
-                      },
-                      toolCallId: 'call-1',
-                      toolName: 'tool1',
-                      type: 'tool-call',
-                    },
-                  ],
-                  role: 'assistant',
-                },
-                {
-                  id: expect.any(String),
-                  content: [
-                    {
-                      result: 'RESULT1',
-                      toolCallId: 'call-1',
-                      toolName: 'tool1',
-                      type: 'tool-result',
-                    },
-                  ],
-                  role: 'tool',
-                },
-              ],
-              modelId: 'mock-model-id',
-              timestamp: new Date(0),
-            },
-            toolCalls: [
-              {
-                args: {
-                  value: 'VALUE',
-                },
-                toolCallId: 'call-1',
-                toolName: 'tool1',
-                type: 'tool-call',
-              },
-            ],
-            toolResults: [
-              {
-                args: {
-                  value: 'VALUE',
-                },
-                result: 'RESULT1',
-                toolCallId: 'call-1',
-                toolName: 'tool1',
-                type: 'tool-result',
-              },
-            ],
-            usage: {
-              completionTokens: 10,
-              promptTokens: 3,
-              totalTokens: 13,
-            },
-            warnings: undefined,
-          },
-        ]);
+        expect(await result.steps).toMatchSnapshot();
       });
 
       it('result.request should be transformed', async () => {
@@ -3522,8 +3562,7 @@ describe('streamText', () => {
           experimental_transform: upperCaseTransform(),
         });
 
-        // consume stream (runs in parallel)
-        convertAsyncIterableToArray(result.textStream);
+        result.consumeStream();
 
         expect(await result.request).toStrictEqual({
           body: 'TEST BODY',
@@ -3559,12 +3598,9 @@ describe('streamText', () => {
           experimental_transform: upperCaseTransform(),
         });
 
-        // consume stream (runs in parallel)
-        convertAsyncIterableToArray(result.textStream);
+        result.consumeStream();
 
-        expect(
-          JSON.stringify(await result.experimental_providerMetadata),
-        ).toStrictEqual(
+        expect(JSON.stringify(await result.providerMetadata)).toStrictEqual(
           JSON.stringify({
             testProvider: {
               testKey: 'TEST VALUE',
@@ -3578,7 +3614,7 @@ describe('streamText', () => {
           Required<Parameters<typeof streamText>[0]>['onFinish']
         >[0];
 
-        const { textStream } = streamText({
+        const resultObject = streamText({
           model: createTestModel({
             stream: convertArrayToReadableStream([
               {
@@ -3623,7 +3659,7 @@ describe('streamText', () => {
           experimental_generateMessageId: mockId({ prefix: 'msg' }),
         });
 
-        await convertAsyncIterableToArray(textStream); // consume stream
+        await resultObject.consumeStream();
 
         expect(result).toMatchSnapshot();
       });
@@ -3633,7 +3669,7 @@ describe('streamText', () => {
           Required<Parameters<typeof streamText>[0]>['onStepFinish']
         >[0];
 
-        const { textStream } = streamText({
+        const resultObject = streamText({
           model: createTestModel({
             stream: convertArrayToReadableStream([
               {
@@ -3678,7 +3714,7 @@ describe('streamText', () => {
           experimental_generateMessageId: mockId({ prefix: 'msg' }),
         });
 
-        await convertAsyncIterableToArray(textStream); // consume stream
+        await resultObject.consumeStream();
 
         expect(result).toMatchSnapshot();
       });
@@ -3728,8 +3764,7 @@ describe('streamText', () => {
           _internal: { now: mockValues(0, 100, 500) },
         });
 
-        // consume stream
-        await convertAsyncIterableToArray(result.textStream);
+        await result.consumeStream();
 
         expect(tracer.jsonSpans).toMatchSnapshot();
       });
@@ -3742,6 +3777,7 @@ describe('streamText', () => {
               type:
                 | 'text-delta'
                 | 'reasoning'
+                | 'source'
                 | 'tool-call'
                 | 'tool-call-streaming-start'
                 | 'tool-call-delta'
@@ -3750,7 +3786,7 @@ describe('streamText', () => {
           >
         > = [];
 
-        const { textStream } = streamText({
+        const resultObject = streamText({
           model: createTestModel({
             stream: convertArrayToReadableStream([
               { type: 'text-delta', textDelta: 'Hello' },
@@ -3809,10 +3845,9 @@ describe('streamText', () => {
           experimental_transform: upperCaseTransform(),
         });
 
-        // consume stream
-        await convertAsyncIterableToArray(textStream);
+        await resultObject.consumeStream();
 
-        assert.deepStrictEqual(result, [
+        expect(result).toStrictEqual([
           { type: 'text-delta', textDelta: 'HELLO' },
           {
             type: 'reasoning',
@@ -3861,7 +3896,7 @@ describe('streamText', () => {
 
     describe('with multiple transformations', () => {
       const toUppercaseAndAddCommaTransform =
-        <TOOLS extends Record<string, CoreTool>>() =>
+        <TOOLS extends ToolSet>() =>
         (options: { tools: TOOLS }) =>
           new TransformStream<TextStreamPart<TOOLS>, TextStreamPart<TOOLS>>({
             transform(chunk, controller) {
@@ -3878,7 +3913,7 @@ describe('streamText', () => {
           });
 
       const omitCommaTransform =
-        <TOOLS extends Record<string, CoreTool>>() =>
+        <TOOLS extends ToolSet>() =>
         (options: { tools: TOOLS }) =>
           new TransformStream<TextStreamPart<TOOLS>, TextStreamPart<TOOLS>>({
             transform(chunk, controller) {
@@ -3912,7 +3947,7 @@ describe('streamText', () => {
 
     describe('with transformation that aborts stream', () => {
       const stopWordTransform =
-        <TOOLS extends Record<string, CoreTool>>() =>
+        <TOOLS extends ToolSet>() =>
         ({ stopStream }: { stopStream: () => void }) =>
           new TransformStream<TextStreamPart<TOOLS>, TextStreamPart<TOOLS>>({
             // note: this is a simplified transformation for testing;
@@ -3933,6 +3968,7 @@ describe('streamText', () => {
                   messageId: 'msg-transformed-123',
                   finishReason: 'stop',
                   logprobs: undefined,
+                  providerMetadata: undefined,
                   usage: {
                     completionTokens: NaN,
                     promptTokens: NaN,
@@ -3952,6 +3988,7 @@ describe('streamText', () => {
                   type: 'finish',
                   finishReason: 'stop',
                   logprobs: undefined,
+                  providerMetadata: undefined,
                   usage: {
                     completionTokens: NaN,
                     promptTokens: NaN,
@@ -4007,6 +4044,7 @@ describe('streamText', () => {
           { type: 'text-delta', textDelta: 'Hello, ' },
           {
             type: 'step-finish',
+            providerMetadata: undefined,
             messageId: 'msg-transformed-123',
             finishReason: 'stop',
             logprobs: undefined,
@@ -4026,6 +4064,7 @@ describe('streamText', () => {
           },
           {
             type: 'finish',
+            providerMetadata: undefined,
             finishReason: 'stop',
             logprobs: undefined,
             usage: {
@@ -4047,7 +4086,7 @@ describe('streamText', () => {
           Required<Parameters<typeof streamText>[0]>['onStepFinish']
         >[0];
 
-        const { textStream } = streamText({
+        const resultObject = streamText({
           model: createTestModel({
             stream: convertArrayToReadableStream([
               { type: 'text-delta', textDelta: 'Hello, ' },
@@ -4073,12 +4112,13 @@ describe('streamText', () => {
           experimental_transform: stopWordTransform(),
         });
 
-        await convertAsyncIterableToArray(textStream); // consume stream
+        await resultObject.consumeStream();
 
         expect(result).toMatchSnapshot();
       });
     });
   });
+
   describe('options.output', () => {
     describe('no output', () => {
       it('should throw error when accessing partial output stream', async () => {
@@ -4169,8 +4209,7 @@ describe('streamText', () => {
           prompt: 'prompt',
         });
 
-        // consume stream
-        await convertAsyncIterableToArray(result.textStream);
+        await result.consumeStream();
 
         expect(callOptions).toEqual({
           temperature: 0,
@@ -4290,6 +4329,74 @@ describe('streamText', () => {
             result.experimental_partialOutputStream,
           ),
         ).toStrictEqual([{}, { value: 'Hello, ' }, { value: 'Hello, world!' }]);
+      });
+
+      it('should resolve text promise with the correct content', async () => {
+        const result = streamText({
+          model: createTestModel({
+            stream: convertArrayToReadableStream([
+              { type: 'text-delta', textDelta: '{ ' },
+              { type: 'text-delta', textDelta: '"value": ' },
+              { type: 'text-delta', textDelta: `"Hello, ` },
+              { type: 'text-delta', textDelta: `world!" ` },
+              { type: 'text-delta', textDelta: '}' },
+              {
+                type: 'finish',
+                finishReason: 'stop',
+                usage: { completionTokens: 10, promptTokens: 3 },
+              },
+            ]),
+          }),
+          experimental_output: object({
+            schema: z.object({ value: z.string() }),
+          }),
+          prompt: 'prompt',
+        });
+
+        result.consumeStream();
+
+        expect(await result.text).toStrictEqual('{ "value": "Hello, world!" }');
+      });
+
+      it('should call onFinish with the correct content', async () => {
+        let result!: Parameters<
+          Required<Parameters<typeof streamText>[0]>['onFinish']
+        >[0];
+
+        const resultObject = streamText({
+          model: createTestModel({
+            stream: convertArrayToReadableStream([
+              { type: 'text-delta', textDelta: '{ ' },
+              { type: 'text-delta', textDelta: '"value": ' },
+              { type: 'text-delta', textDelta: `"Hello, ` },
+              { type: 'text-delta', textDelta: `world!" ` },
+              { type: 'text-delta', textDelta: '}' },
+              {
+                type: 'finish',
+                finishReason: 'stop',
+                usage: { completionTokens: 10, promptTokens: 3 },
+              },
+            ]),
+          }),
+          experimental_output: object({
+            schema: z.object({ value: z.string() }),
+          }),
+          prompt: 'prompt',
+          onFinish: async event => {
+            result = event as unknown as typeof result;
+          },
+          experimental_generateMessageId: mockId({ prefix: 'msg' }),
+          _internal: {
+            generateId: mockId({ prefix: 'id' }),
+            currentDate: () => new Date(0),
+          },
+        });
+
+        resultObject.consumeStream();
+
+        await resultObject.consumeStream();
+
+        expect(result).toMatchSnapshot();
       });
     });
   });

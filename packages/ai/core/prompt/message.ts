@@ -1,11 +1,18 @@
 import { z } from 'zod';
 import { ProviderMetadata } from '../types';
-import { providerMetadataSchema } from '../types/provider-metadata';
+import {
+  providerMetadataSchema,
+  ProviderOptions,
+} from '../types/provider-metadata';
 import {
   FilePart,
   filePartSchema,
   ImagePart,
   imagePartSchema,
+  ReasoningPart,
+  reasoningPartSchema,
+  RedactedReasoningPart,
+  redactedReasoningPartSchema,
   TextPart,
   textPartSchema,
   ToolCallPart,
@@ -30,12 +37,18 @@ Additional provider-specific metadata. They are passed through
 to the provider from the AI SDK and enable provider-specific
 functionality that can be fully encapsulated in the provider.
  */
+  providerOptions?: ProviderOptions;
+
+  /**
+@deprecated Use `providerOptions` instead.
+ */
   experimental_providerMetadata?: ProviderMetadata;
 };
 
 export const coreSystemMessageSchema: z.ZodType<CoreSystemMessage> = z.object({
   role: z.literal('system'),
   content: z.string(),
+  providerOptions: providerMetadataSchema.optional(),
   experimental_providerMetadata: providerMetadataSchema.optional(),
 });
 
@@ -51,6 +64,11 @@ Additional provider-specific metadata. They are passed through
 to the provider from the AI SDK and enable provider-specific
 functionality that can be fully encapsulated in the provider.
  */
+  providerOptions?: ProviderOptions;
+
+  /**
+@deprecated Use `providerOptions` instead.
+*/
   experimental_providerMetadata?: ProviderMetadata;
 };
 
@@ -60,6 +78,7 @@ export const coreUserMessageSchema: z.ZodType<CoreUserMessage> = z.object({
     z.string(),
     z.array(z.union([textPartSchema, imagePartSchema, filePartSchema])),
   ]),
+  providerOptions: providerMetadataSchema.optional(),
   experimental_providerMetadata: providerMetadataSchema.optional(),
 });
 
@@ -80,6 +99,11 @@ Additional provider-specific metadata. They are passed through
 to the provider from the AI SDK and enable provider-specific
 functionality that can be fully encapsulated in the provider.
  */
+  providerOptions?: ProviderOptions;
+
+  /**
+@deprecated Use `providerOptions` instead.
+*/
   experimental_providerMetadata?: ProviderMetadata;
 };
 
@@ -88,15 +112,25 @@ export const coreAssistantMessageSchema: z.ZodType<CoreAssistantMessage> =
     role: z.literal('assistant'),
     content: z.union([
       z.string(),
-      z.array(z.union([textPartSchema, toolCallPartSchema])),
+      z.array(
+        z.union([
+          textPartSchema,
+          reasoningPartSchema,
+          redactedReasoningPartSchema,
+          toolCallPartSchema,
+        ]),
+      ),
     ]),
+    providerOptions: providerMetadataSchema.optional(),
     experimental_providerMetadata: providerMetadataSchema.optional(),
   });
 
 /**
 Content of an assistant message. It can be a string or an array of text and tool call parts.
  */
-export type AssistantContent = string | Array<TextPart | ToolCallPart>;
+export type AssistantContent =
+  | string
+  | Array<TextPart | ReasoningPart | RedactedReasoningPart | ToolCallPart>;
 
 /**
 A tool message. It contains the result of one or more tool calls.
@@ -110,12 +144,18 @@ Additional provider-specific metadata. They are passed through
 to the provider from the AI SDK and enable provider-specific
 functionality that can be fully encapsulated in the provider.
  */
+  providerOptions?: ProviderOptions;
+
+  /**
+@deprecated Use `providerOptions` instead.
+*/
   experimental_providerMetadata?: ProviderMetadata;
 };
 
 export const coreToolMessageSchema: z.ZodType<CoreToolMessage> = z.object({
   role: z.literal('tool'),
   content: z.array(toolResultPartSchema),
+  providerOptions: providerMetadataSchema.optional(),
   experimental_providerMetadata: providerMetadataSchema.optional(),
 });
 

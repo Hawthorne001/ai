@@ -1,7 +1,13 @@
 import { JSONValue } from '@ai-sdk/provider';
 import { DataStreamString } from '@ai-sdk/ui-utils';
+import { Source } from '../types/language-model';
 
 export interface DataStreamWriter {
+  /**
+   * Appends a data part to the stream.
+   */
+  write(data: DataStreamString): void;
+
   /**
    * Appends a data part to the stream.
    */
@@ -11,6 +17,11 @@ export interface DataStreamWriter {
    * Appends a message annotation to the stream.
    */
   writeMessageAnnotation(value: JSONValue): void;
+
+  /**
+   * Appends a source part to the stream.
+   */
+  writeSource(source: Source): void;
 
   /**
    * Merges the contents of another stream to this stream.

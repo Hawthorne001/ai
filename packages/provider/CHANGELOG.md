@@ -1,5 +1,23 @@
 # @ai-sdk/provider
 
+## 1.0.9
+
+### Patch Changes
+
+- ddf9740: feat (ai): add anthropic reasoning
+
+## 1.0.8
+
+### Patch Changes
+
+- 2761f06: fix (ai/provider): publish with LanguageModelV1Source
+
+## 1.0.7
+
+### Patch Changes
+
+- d89c3b9: feat (provider): add image model support to provider specification
+
 ## 1.0.6
 
 ### Patch Changes

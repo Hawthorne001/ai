@@ -28,11 +28,17 @@ export function createDataStream({
 
   try {
     const result = execute({
+      write(data: DataStreamString) {
+        safeEnqueue(data);
+      },
       writeData(data) {
         safeEnqueue(formatDataStreamPart('data', [data]));
       },
       writeMessageAnnotation(annotation) {
         safeEnqueue(formatDataStreamPart('message_annotations', [annotation]));
+      },
+      writeSource(source) {
+        safeEnqueue(formatDataStreamPart('source', source));
       },
       merge(streamArg) {
         ongoingStreamPromises.push(
