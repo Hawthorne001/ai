@@ -1,5 +1,11 @@
 # @ai-sdk/gateway
 
+## 1.0.0-beta.19
+
+### Patch Changes
+
+- 721775e: feat(provider/gateway): Generate new Gateway embedding model settings file
+
 ## 1.0.0-beta.18
 
 ### Patch Changes

@@ -1,5 +1,13 @@
 # ai
 
+## 5.0.0-beta.34
+
+### Patch Changes
+
+- 53569b8: feat (ai): add experimental repairText function to streamObject
+- Updated dependencies [721775e]
+  - @ai-sdk/gateway@1.0.0-beta.19
+
 ## 5.0.0-beta.33
 
 ### Patch Changes
